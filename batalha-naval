@@ -1,0 +1,286 @@
+#include <Arduino.h>
+#include <esp_now.h>
+#include <WiFi.h>
+
+#define Jogador1 true
+
+unsigned char macAdversario[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};
+
+// Variáveis globais para comunicação ESP-NOW
+String msgRecebida = "";
+volatile bool chegouMsg = false;
+
+int c, l, opcao, vidas = 8;
+int orientacao;
+int meuMapa[8][8];
+int mapaInimigo[8][8];
+bool oponentePronto = false;
+
+void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  // Garante que a string termine corretamente no tamanho recebido
+  char buffer[len + 1];
+  memcpy(buffer, data, len);
+  buffer[len] = '\0';
+  
+  msgRecebida = String(buffer);
+  chegouMsg = true;
+}
+
+void mostrarGrid(int grid[8][8], bool eMeuMapa) {
+  Serial.println("   0 1 2 3 4 5 6 7");
+  Serial.println("  +----------------");
+  for (int i = 0; i < 8; i++) {
+    Serial.print(i);
+    Serial.print("| ");
+    for (int j = 0; j < 8; j++) { // Corrigido: j++ em vez de i++
+      if (eMeuMapa) {
+        if (grid[i][j] == 0) {
+          Serial.print("~ ");
+        } else if (grid[i][j] == 1) {
+          Serial.print("B ");
+        } else if (grid[i][j] == 2) {
+          Serial.print("X ");
+        } else {
+          Serial.print("O ");
+        }
+      } else {
+        if (grid[i][j] == 0) {
+          Serial.print(". ");
+        } else if (grid[i][j] == 1) {
+          Serial.print("O ");
+        } else {
+          Serial.print("X ");
+        }
+      }
+    }
+    Serial.println();
+  }
+  Serial.println();
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+
+  Serial.print("Meu MAC address: ");
+  Serial.println(WiFi.macAddress());
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Erro ao iniciar ESP-NOW");
+    return;
+  }
+  
+  esp_now_register_recv_cb(onDataRecv);
+
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, macAdversario, 6);
+  peer.channel = 0;  
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+}
+
+void loop() {
+  // Reinicia tabuleiros e variáveis a cada nova partida
+  for (int i = 0; i < 8; i++) {
+    for (int j = 0; j < 8; j++) {
+      meuMapa[i][j] = 0;
+      mapaInimigo[i][j] = 0;
+    }
+  }
+  vidas = 8;
+  oponentePronto = false;
+  chegouMsg = false;
+  opcao = 0;
+
+  while (opcao != 1) {
+    Serial.println("BEM-VINDO A BATALHA NAVAL");
+    Serial.println("\n|Menu|\n 1 - Novo Jogo \n 2 - Instrucoes \n 3 - Creditos");
+
+    while (!Serial.available());
+    opcao = Serial.parseInt();
+    while (Serial.available()) Serial.read();
+
+    Serial.println("\n---------------------------\n");
+
+    if (opcao == 2) {
+      Serial.println("1. Posicione 2 barcos de tamanho 2 e 1 barco de tamanho 4");
+      Serial.println("2. Digite Coluna (0-7) e Linha (0-7) para atirar");
+      Serial.println("3. Quem afundar as 8 partes dos barcos inimigos vence!\n");
+    } else if (opcao == 3) {
+      Serial.println("Desenvolvido para ESP32 via ESP-NOW.\n");
+    }
+  }
+
+  int tamanhos[3] = {2, 2, 4};
+
+  for (int b = 0; b < 3; b++) {
+    int tam = tamanhos[b];
+    bool valido = false;
+
+    while (!valido) {
+      Serial.printf("POSICIONAR BARCO %d (Tamanho: %d)\n", b + 1, tam);
+      mostrarGrid(meuMapa, true);
+
+      Serial.print("Coluna (0-7): ");
+      while (!Serial.available());
+      c = Serial.parseInt();
+      while (Serial.available()) Serial.read();
+      Serial.println(c);
+
+      Serial.print("Linha (0-7): ");
+      while (!Serial.available());
+      l = Serial.parseInt();
+      while (Serial.available()) Serial.read();
+      Serial.println(l);
+
+      Serial.print("Orientacao (1 - Horizontal | 2 - Vertical): ");
+      while (!Serial.available());
+      orientacao = Serial.parseInt();
+      while (Serial.available()) Serial.read();
+      Serial.println(orientacao);
+
+      // 1º Passo: Apenas valida todas as casas do barco
+      valido = true;
+      for (int k = 0; k < tam; k++) {
+        int nl = l + (orientacao == 2 ? k : 0);
+        int nc = c + (orientacao == 1 ? k : 0);
+
+        if (nl < 0 || nl >= 8 || nc < 0 || nc >= 8 || (orientacao != 1 && orientacao != 2)) {
+          Serial.println("\nPosicao fora do mapa ou orientacao invalida! Tente de novo.\n");
+          valido = false;
+          break;
+        }
+        if (meuMapa[nl][nc] == 1) {
+          Serial.println("\nJa existe um barco ai! Tente de novo.\n");
+          valido = false;
+          break;
+        }
+      }
+
+      // 2º Passo: Se todas as casas forem válidas, grava no mapa
+      if (valido) {
+        for (int k = 0; k < tam; k++) {
+          int nl = l + (orientacao == 2 ? k : 0);
+          int nc = c + (orientacao == 1 ? k : 0);
+          meuMapa[nl][nc] = 1;
+        }
+        Serial.println("\n--------------------------------------------------\n");
+      }
+    }
+  }
+
+  Serial.println("Barcos posicionados! Aguardando o outro grupo...");
+  while (!oponentePronto) {
+    String aviso = "PRONTO";
+    esp_now_send(macAdversario, (unsigned char *)aviso.c_str(), aviso.length() + 1);
+    delay(1000);
+
+    if (chegouMsg) {
+      chegouMsg = false;
+      if (msgRecebida == "PRONTO") {
+        oponentePronto = true;
+        esp_now_send(macAdversario, (unsigned char *)aviso.c_str(), aviso.length() + 1);
+      }
+    }
+  }
+
+  Serial.println("\nPARTIDA INICIADA\n");
+  bool minhaVez = Jogador1;
+  bool jogando = true;
+
+  while (jogando) {
+    if (minhaVez) {
+      Serial.println("\nSUA VEZ DE ATIRAR");
+      Serial.println("Mapa do Adversario (. = Desconhecido | O = Agua | X = Acerto):");
+      mostrarGrid(mapaInimigo, false);
+
+      while (true) {
+        Serial.print("Coluna (0-7): ");
+        while (!Serial.available());
+        c = Serial.parseInt();
+        while (Serial.available()) Serial.read();
+        Serial.println(c);
+
+        Serial.print("Linha (0-7): ");
+        while (!Serial.available());
+        l = Serial.parseInt();
+        while (Serial.available()) Serial.read();
+        Serial.println(l);
+
+        if (c < 0 || c > 7 || l < 0 || l > 7) {
+          Serial.println("\nTiro fora nao vale! Digite entre 0 e 7.\n");
+        } else if (mapaInimigo[l][c] != 0) {
+          Serial.println("\nVoce ja atirou ai! Escolha outro lugar.\n");
+        } else {
+          break;
+        }
+      }
+
+      chegouMsg = false; // Limpa flag antes de enviar
+      String msgTiro = "TIRO " + String(l) + " " + String(c);
+      esp_now_send(macAdversario, (unsigned char *)msgTiro.c_str(), msgTiro.length() + 1);
+      Serial.println("Tiro disparado! Aguardando resposta...");
+
+      while (!chegouMsg) delay(10);
+      chegouMsg = false;
+
+      if (msgRecebida == "ACERTOU") {
+        Serial.println("\n>>> ACERTOU!!! <<<\n");
+        mapaInimigo[l][c] = 2;
+      } else if (msgRecebida == "ERROU") {
+        Serial.println("\n>>> ERROU!!! (AGUA) <<<\n");
+        mapaInimigo[l][c] = 1;
+      } else if (msgRecebida == "VENCEU") {
+        mapaInimigo[l][c] = 2;
+        Serial.println("   PARABENS! VOCE AFUNDOU TUDO E VENCEU!   ");
+        jogando = false;
+      }
+      minhaVez = false;
+    } 
+    else {
+      Serial.println("\nVEZ DO ADVERSARIO");
+      Serial.println("Seu Mapa (B = Barco | X = Atingido | O = Tiro na agua):");
+      mostrarGrid(meuMapa, true);
+      Serial.println("Aguardando o tiro do adversario...");
+
+      while (!chegouMsg) delay(10);
+      chegouMsg = false;
+
+      if (msgRecebida.startsWith("TIRO")) {
+        int tiroL = msgRecebida.substring(5, 6).toInt();
+        int tiroC = msgRecebida.substring(7, 8).toInt();
+
+        if (meuMapa[tiroL][tiroC] == 1) {
+          meuMapa[tiroL][tiroC] = 2;
+          vidas--;
+          Serial.printf("\n[!] O adversario ACERTOU seu barco na Coluna %d, Linha %d! (Vidas: %d)\n", tiroC, tiroL, vidas);
+
+          String resposta = (vidas == 0) ? "VENCEU" : "ACERTOU";
+          esp_now_send(macAdversario, (unsigned char *)resposta.c_str(), resposta.length() + 1);
+
+          if (vidas == 0) {
+            Serial.println("   FIM DE JOGO! TODOS OS SEUS BARCOS AFUNDARAM!");
+            jogando = false;
+          }
+        } else {
+          if (meuMapa[tiroL][tiroC] == 0) meuMapa[tiroL][tiroC] = 3;
+          Serial.printf("\n[~] O adversario atirou na Coluna %d, Linha %d e ERROU!\n", tiroC, tiroL);
+          String resposta = "ERROU";
+          esp_now_send(macAdversario, (unsigned char *)resposta.c_str(), resposta.length() + 1);
+        }
+      }
+      minhaVez = true;
+    }
+  }
+
+  Serial.println("Digite 1 para voltar ao Menu Principal:");
+  int voltar = 0;
+  while (voltar != 1) {
+    while (!Serial.available());
+    voltar = Serial.parseInt();
+    while (Serial.available()) Serial.read();
+  }
+} // <--- O loop() agora fecha aqui no final
